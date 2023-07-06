@@ -1,4 +1,6 @@
 use std::io::{stdin, stdout, Write};
+use std::sync::{mpsc, Arc, Mutex};
+use std::time::Duration;
 
 use termion::color::{Fg, LightBlue, LightRed, Reset};
 use termion::cursor::Goto;
@@ -166,58 +168,78 @@ fn get_board_cell_position(screen_x: u16, screen_y: u16) -> (usize, usize) {
     )
 }
 fn main() {
-    let mut game = Game {
+    let game = Arc::new(Mutex::new(Game {
         board: Board::default(),
         current_player: Player::X,
-    };
+    }));
+    let game2 = game.clone();
     let stdin = stdin();
     let mut stdout = MouseTerminal::from(stdout().into_raw_mode().unwrap());
+    let (cs, cr) = mpsc::channel();
+    std::thread::scope(|s| {
+        s.spawn(move || {
+            for c in stdin.events() {
+                let evt = c.expect("Failed to read event");
+                match evt {
+                    Event::Mouse(MouseEvent::Press(MouseButton::Left, x, y)) => {
+                        let mut game = game.lock().unwrap();
+                        if !check_board_bounds(x, y) {
+                            continue;
+                        }
+                        let (board_x, board_y) = get_board_cell_position(x, y);
+                        let current_player = game.current_player;
+                        let cell = &mut game.board.0[board_y][board_x];
 
-    game.render(&mut stdout);
-    for c in stdin.events() {
-        let evt = c.expect("Failed to read event");
-        match evt {
-            Event::Mouse(MouseEvent::Press(MouseButton::Left, x, y)) => {
-                if !check_board_bounds(x, y) {
-                    continue;
+                        if cell.is_some() {
+                            continue;
+                        }
+                        *cell = Some(current_player);
+                        game.switch_player();
+                    }
+                    Event::Key(Key::Char('q')) => {
+                        cs.send(()).unwrap();
+                        break;
+                    }
+                    _ => (),
                 }
-                let (board_x, board_y) = get_board_cell_position(x, y);
-                let cell = &mut game.board.0[board_y][board_x];
-                if cell.is_some() {
-                    continue;
+            }
+        });
+        s.spawn(move || {
+            while cr.try_recv().is_err() {
+                std::thread::sleep(Duration::from_millis(100));
+                let game = game2.lock().unwrap();
+                game.render(&mut stdout);
+                match game.board.state() {
+                    BoardState::Tie => {
+                        write!(
+                            stdout,
+                            "{}{}EMPATE",
+                            Fg(Reset),
+                            Goto(BOARD_X, BOARD_Y + (CELL_HEIGHT * 3) + 3),
+                        )
+                        .unwrap();
+                        std::process::exit(0);
+                    }
+                    BoardState::Incomplete => {}
+                    BoardState::Won(player) => {
+                        write!(
+                            stdout,
+                            "{}{}O jogador {}{player:#?}{} ganhou",
+                            Goto(BOARD_X, BOARD_Y + (CELL_HEIGHT * 3) + 3),
+                            Fg(Reset),
+                            match player {
+                                Player::X => Fg(LightBlue).to_string(),
+                                Player::O => Fg(LightRed).to_string(),
+                            },
+                            Fg(Reset)
+                        )
+                        .unwrap();
+                        std::process::exit(0);
+                    }
                 }
-                *cell = Some(game.current_player);
-                game.switch_player();
             }
-            Event::Key(Key::Char('q')) => {
-                break;
-            }
-            _ => (),
-        }
-        game.render(&mut stdout);
-        match game.board.state() {
-            BoardState::Tie => {
-                write!(stdout, "{}EMPATE", Goto(BOARD_X, BOARD_Y + 8),).unwrap();
-                break;
-            }
-            BoardState::Incomplete => {}
-            BoardState::Won(player) => {
-                write!(
-                    stdout,
-                    "{}{}O jogador {}{player:#?}{} ganhou",
-                    Goto(BOARD_X, BOARD_Y + 8),
-                    Fg(Reset),
-                    match player {
-                        Player::X => Fg(LightBlue).to_string(),
-                        Player::O => Fg(LightRed).to_string(),
-                    },
-                    Fg(Reset)
-                )
-                .unwrap();
-                break;
-            }
-        }
-    }
+        });
+    });
 }
 #[cfg(test)]
 mod tests {
