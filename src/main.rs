@@ -213,7 +213,7 @@ fn main() {
                     BoardState::Tie => {
                         write!(
                             stdout,
-                            "{}{}EMPATE",
+                            "{}{}EMPATE                                          ",
                             Fg(Reset),
                             Goto(BOARD_X, BOARD_Y + (CELL_HEIGHT * 3) + 3),
                         )
